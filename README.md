@@ -18,16 +18,16 @@ The system can fetch daily OHLCV data, store it as Parquet, read it into C++ dom
 - [x] **Simulation contract** — documented in `docs/simulation_contract.md`: timing rules, event priority, fill eligibility, cost model, accounting conventions, and 9 testable invariants
 - [x] **Test framework** — Google Test via CMake FetchContent; 28 unit tests covering event ordering, position accounting, order lifecycle, fill cost invariants
 - [x] **Build system** — CMake 3.20+, C++20, auto-detects Arrow/Parquet from pyarrow, static library shared between binary and tests
-- [ ] Event kernel (clock, event queue, priority ordering)
-- [ ] Portfolio & accounting ledger
-- [ ] Execution model & OMS
-- [ ] Feature pipeline
-- [ ] Strategy interface & implementations
-- [ ] Risk controls
-- [ ] Experiment runner & config
-- [ ] Analytics & reporting
-- [ ] Research protocol (walk-forward, cost sensitivity)
-- [ ] Performance benchmarks
+- [x] Event kernel (clock, event queue, priority ordering)
+- [x] Portfolio & accounting ledger
+- [x] Execution model & OMS
+- [x] Feature pipeline
+- [x] Strategy interface & implementations
+- [x] Risk controls
+- [x] Experiment runner & config
+- [x] Analytics & reporting
+- [] Research protocol (walk-forward, cost sensitivity)
+- [] Performance benchmarks
 
 ## Architecture
 
