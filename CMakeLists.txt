@@ -82,6 +82,10 @@ add_executable(qback_tests
     tests/unit/test_event.cpp
     tests/unit/test_position.cpp
     tests/unit/test_order.cpp
+    tests/unit/test_clock.cpp
+    tests/unit/test_event_queue.cpp
+    tests/unit/test_bar_feed.cpp
+    tests/unit/test_engine.cpp
 )
 target_link_libraries(qback_tests PRIVATE qback_lib GTest::gtest_main)
 set_target_properties(qback_tests PROPERTIES

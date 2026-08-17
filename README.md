@@ -6,9 +6,9 @@ The goal is not a profitable strategy. It is a trustworthy simulation system tha
 
 ## Current Status
 
-**Layer 1 complete: domain model, simulation contract, and test framework.**
+**Layer 2 complete: deterministic event kernel.**
 
-The system can fetch daily OHLCV data, store it as Parquet, read it into C++ domain structs, and has a full domain vocabulary (Order, Fill, Position, Event) with 28 passing unit tests validating simulation contract invariants. No simulation loop, strategy, or execution logic exists yet.
+The system has a full domain vocabulary, a simulation contract, and a working event-driven engine with a priority queue, monotonic clock, and bar feed. Events dispatch in deterministic order — `(timestamp, priority, sequence)` — and handlers can dynamically enqueue new events that still respect priority ordering. 51 passing unit tests across 10 test suites. No portfolio, execution, strategy, or analytics logic exists yet.
 
 ## Implemented Features
 
@@ -16,7 +16,8 @@ The system can fetch daily OHLCV data, store it as Parquet, read it into C++ dom
 - [x] **Parquet reader** — C++ reads Parquet via Arrow C++ API with column type-checking, schema metadata extraction, and chunk consolidation
 - [x] **Domain types** — `Date`, `Bar`, `Instrument`, `Order`, `Fill`, `Position`, `Event`, `EventKey` structs and all supporting enums (`Side`, `OrderType`, `OrderStatus`, `TIF`, `EventType`)
 - [x] **Simulation contract** — documented in `docs/simulation_contract.md`: timing rules, event priority, fill eligibility, cost model, accounting conventions, and 9 testable invariants
-- [x] **Test framework** — Google Test via CMake FetchContent; 28 unit tests covering event ordering, position accounting, order lifecycle, fill cost invariants
+- [x] **Test framework** — Google Test via CMake FetchContent; 51 unit tests across 10 suites
+- [x] **Event kernel** — Deterministic engine with priority queue (`EventQueue`), monotonic `Clock`, `BarFeed` loader, and `Engine` dispatcher with pluggable handlers
 - [x] **Build system** — CMake 3.20+, C++20, auto-detects Arrow/Parquet from pyarrow, static library shared between binary and tests
 - [x] Event kernel (clock, event queue, priority ordering)
 - [x] Portfolio & accounting ledger
@@ -43,15 +44,24 @@ src/qback/
 │   ├── order.h               # Order struct with eligibility and state tracking
 │   ├── fill.h                # Fill struct with itemized costs and cash delta
 │   └── position.h            # Position struct with avg cost tracking and PnL realization
-└── data/
-    ├── parquet_reader.h       # read_parquet(), read_all_parquet()
-    └── parquet_reader.cpp     # Arrow C++ Parquet deserialization
+├── data/
+│   ├── parquet_reader.h       # read_parquet(), read_all_parquet()
+│   └── parquet_reader.cpp     # Arrow C++ Parquet deserialization
+└── engine/
+    ├── clock.h                # Monotonic simulation clock
+    ├── event_queue.h          # Min-heap priority queue with sequence counter
+    ├── bar_feed.h             # Converts Instruments into chronological MarketData events
+    └── engine.h               # Main dispatch loop with pluggable event handlers
 
 tests/unit/
 ├── test_types.cpp             # Enum values, to_string(), event priority ordering
 ├── test_event.cpp             # EventKey comparison, sorting, same-bar ordering invariants
 ├── test_position.cpp          # Long/short accounting, avg cost blending, PnL realization
-└── test_order.cpp             # Eligibility, remaining quantity, terminal states, fill costs
+├── test_order.cpp             # Eligibility, remaining quantity, terminal states, fill costs
+├── test_clock.cpp             # Monotonicity, backwards rejection, reset
+├── test_event_queue.cpp       # Chronological ordering, priority, sequence, peek
+├── test_bar_feed.cpp          # Loading, interleaving, data preservation, determinism
+└── test_engine.cpp            # Dispatch order, dynamic enqueue, priority respect, clock
 
 docs/
 └── simulation_contract.md     # All timing, ordering, and accounting rules
@@ -60,7 +70,6 @@ docs/
 ### Planned modules (not yet implemented)
 
 ```
-├── engine/                   # Event kernel, clock, priority queue
 ├── features/                 # Rolling computations (returns, volatility, momentum)
 ├── strategy/                 # IStrategy interface, buy-and-hold, momentum
 ├── portfolio/                # Cash, positions, marks, PnL, NAV ledger
@@ -80,7 +89,7 @@ docs/
     → [Python: matplotlib] → HTML report
 ```
 
-Only the first two stages (Python fetch → C++ Parquet reader → Bar vectors) produce runnable output. Domain types for all subsequent stages are defined but not yet wired into a simulation loop.
+The first three stages are implemented (fetch → read → event kernel). Domain types for all subsequent stages (portfolio, execution, strategy, risk, analytics) are defined but not yet wired into the engine's dispatch loop.
 
 ## Data Flow
 
@@ -92,9 +101,11 @@ Only the first two stages (Python fetch → C++ Parquet reader → Bar vectors) 
 
 3. **Display** (`src/qback/main.cpp`): Iterates loaded instruments, computes per-symbol min low / max high, prints a summary table. Accepts an optional data directory argument (defaults to `data/raw`).
 
+4. **Event kernel** (`src/qback/engine/`): `BarFeed` converts loaded `Instrument` vectors into chronological `MarketData` events sorted by `(date, symbol)`. `EventQueue` is a min-heap ordered by `EventKey{timestamp, priority, sequence}`. `Engine` pops events, advances the `Clock`, and dispatches to registered handlers. Handlers can dynamically enqueue new events (e.g., a MarketData handler enqueues a StrategySignal) — these still respect priority ordering within the same timestamp.
+
 ### Not yet implemented
 
-Event kernel, feature computation, strategy, execution, portfolio, risk, analytics, and experiment orchestration.
+Feature computation, strategy, execution, portfolio, risk, analytics, and experiment orchestration.
 
 ## Module Design
 
@@ -178,6 +189,19 @@ struct Position {
 - `read_parquet(path) → Instrument` — type-checked single-file reader.
 - `read_all_parquet(directory) → vector<Instrument>` — directory scan, sorted by symbol.
 
+### `qback::engine` — Deterministic event kernel
+
+**`Clock`** — Monotonically advancing simulation clock. Initialized to `BEFORE_START` (int32_t min). `advance_to(timestamp)` throws `std::logic_error` if the requested timestamp is earlier than current. Prevents any backwards time travel in the simulation.
+
+**`EventQueue`** — Min-heap (`std::priority_queue` with `std::greater<Event>`) ordered by `EventKey{timestamp, priority, sequence}`. Provides a `next_sequence()` counter that monotonically increases, guaranteeing deterministic tie-breaking even for events added during dispatch. Header-only.
+
+**`BarFeed`** — `load_bars_into_queue(instruments, queue)` flattens all bars from all instruments into a single vector, sorts by `(date, symbol)`, and enqueues one `MarketDataEvent` per bar with sequentially assigned sequence numbers. This guarantees that within the same trading day, symbols are always processed in alphabetical order.
+
+**`Engine`** — Main dispatch loop. Stores a map of `EventType → EventHandler` (where `EventHandler = std::function<void(const Event&)>`). `run()` pops events from the queue, advances the clock, and calls the registered handler. Returns `RunStats{events_processed, first_timestamp, last_timestamp}`. Key properties:
+- Handlers can call `engine.push_event()` to enqueue new events during dispatch — these are inserted into the heap and will fire in correct priority order, even within the same timestamp.
+- Unregistered event types are silently skipped (event is popped and counted but no handler fires).
+- The clock is guaranteed to advance monotonically across all dispatched events.
+
 ## Parquet Schema
 
 Written by `scripts/fetch_data.py`, read by `src/qback/data/parquet_reader.cpp`:
@@ -257,13 +281,13 @@ cmake --build build
 
 ## Testing
 
-28 unit tests via Google Test (fetched automatically by CMake via FetchContent). Run with:
+51 unit tests across 10 test suites via Google Test (fetched automatically by CMake via FetchContent). Run with:
 
 ```bash
 ./build/qback_tests
 ```
 
-### Test coverage by domain area
+### Test coverage by area
 
 | Test suite | Tests | What it validates |
 |---|---|---|
@@ -273,18 +297,25 @@ cmake --build build
 | `Position` | 11 | Long/short entry, avg cost blending, profit/loss realization, close/reopen, unrealized PnL |
 | `Order` | 3 | `eligible_date > submitted_date` (contract §3), `remaining()`, terminal state detection |
 | `Fill` | 3 | Cost non-negativity (contract §8), buy/sell cash delta correctness |
+| `Clock` | 5 | Starts before any timestamp, advances forward, rejects backwards, allows same-time, reset |
+| `EventQueue` | 7 | Empty state, chronological pop, priority ordering, sequence ordering, peek, counter monotonicity |
+| `BarFeed` | 5 | Single/multi instrument loading, alphabetical interleaving, data preservation, deterministic ordering |
+| `Engine` | 6 | Empty run, dispatch order, clock monotonicity, dynamic enqueue, priority respect for dynamic events, unhandled skip |
 
 ### Invariants tested
 
 - [x] `EventType` numeric values enforce correct priority order (§2)
 - [x] `EventKey` comparison produces correct chronological + priority ordering (§2)
 - [x] Signal events fire before order events on the same bar (§2, §3)
+- [x] Dynamically enqueued events respect priority within the same timestamp (§2)
+- [x] Clock never moves backwards (§2)
+- [x] Same data loaded twice produces identical event sequence (§12)
 - [x] `order.eligible_date > order.submitted_date` (§3)
 - [x] `fill.total_cost() >= 0` (§8)
 - [ ] `NAV = cash + Σ(quantity × mark)` (needs portfolio module)
 - [ ] `fill.quantity <= participation_cap × bar.volume` (needs execution module)
 - [ ] Adding costs weakly decreases PnL (needs end-to-end run)
-- [ ] Identical inputs → identical outputs (needs experiment runner)
+- [ ] Identical full runs → identical outputs (needs experiment runner)
 
 ## Example Output
 
@@ -307,8 +338,8 @@ Data access verified: 5 instruments loaded.
 Actual output from `./build/qback_tests`:
 
 ```
-[==========] Running 28 tests from 6 test suites.
-[  PASSED  ] 28 tests.
+[==========] Running 51 tests from 10 test suites.
+[  PASSED  ] 51 tests.
 ```
 
 ## Performance
@@ -352,15 +383,24 @@ Q1/
 │       │   ├── order.h         # Order with eligibility tracking
 │       │   ├── fill.h          # Fill with itemized costs
 │       │   └── position.h      # Position with avg cost and PnL
-│       └── data/
-│           ├── parquet_reader.h
-│           └── parquet_reader.cpp
+│       ├── data/
+│       │   ├── parquet_reader.h
+│       │   └── parquet_reader.cpp
+│       └── engine/
+│           ├── clock.h         # Monotonic simulation clock
+│           ├── event_queue.h   # Min-heap with sequence counter
+│           ├── bar_feed.h      # Instruments → chronological events
+│           └── engine.h        # Dispatch loop with pluggable handlers
 └── tests/
     └── unit/
         ├── test_types.cpp
         ├── test_event.cpp
         ├── test_position.cpp
-        └── test_order.cpp
+        ├── test_order.cpp
+        ├── test_clock.cpp
+        ├── test_event_queue.cpp
+        ├── test_bar_feed.cpp
+        └── test_engine.cpp
 ```
 
 ## Design Decisions
@@ -376,6 +416,9 @@ Q1/
 | Test framework | Google Test v1.15.2 via FetchContent | No system install needed; widely understood; integrates with CTest |
 | Event ordering | `EventKey{timestamp, priority, sequence}` with `operator<=>` | Three-field key makes ordering fully deterministic without ambiguity |
 | Position accounting | FIFO-like avg cost blending | Simple, deterministic, matches common institutional accounting |
+| Engine architecture | Handler map (`EventType → std::function`) | Decouples event dispatch from module logic; handlers register at setup, engine just dispatches |
+| Bar feed ordering | Sort by `(date, symbol)` before sequence assignment | Guarantees alphabetical symbol order within each day, deterministic across runs |
+| Engine headers | All header-only (clock, queue, bar_feed, engine) | No .cpp files needed — simple types with no heavy dependencies beyond domain headers |
 
 ## Unresolved Decisions
 
@@ -388,7 +431,7 @@ Q1/
 Ordered by implementation layer:
 
 1. ~~**Layer 1**: Domain model, simulation contract, test framework~~ **(done)**
-2. **Layer 2**: Deterministic event kernel (priority queue, clock, bar feed)
+2. ~~**Layer 2**: Deterministic event kernel (priority queue, clock, bar feed)~~ **(done)**
 3. **Layer 3**: Portfolio & accounting ledger (cash, positions, marks, PnL, NAV invariant)
 4. **Layer 4**: Execution model & OMS (order state machine, reference + realistic fill models, cost itemization)
 5. **Layer 5**: Feature pipeline & strategies (rolling computations, buy-and-hold, momentum)
