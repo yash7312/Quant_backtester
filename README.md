@@ -312,9 +312,9 @@ cmake --build build
 - [x] Same data loaded twice produces identical event sequence (§12)
 - [x] `order.eligible_date > order.submitted_date` (§3)
 - [x] `fill.total_cost() >= 0` (§8)
-- [ ] `NAV = cash + Σ(quantity × mark)` (needs portfolio module)
-- [ ] `fill.quantity <= participation_cap × bar.volume` (needs execution module)
-- [ ] Adding costs weakly decreases PnL (needs end-to-end run)
+- [X] `NAV = cash + Σ(quantity × mark)` (needs portfolio module)
+- [X] `fill.quantity <= participation_cap × bar.volume` (needs execution module)
+- [X] Adding costs weakly decreases PnL (needs end-to-end run)
 - [ ] Identical full runs → identical outputs (needs experiment runner)
 
 ## Example Output
@@ -420,7 +420,7 @@ Q1/
 | Bar feed ordering | Sort by `(date, symbol)` before sequence assignment | Guarantees alphabetical symbol order within each day, deterministic across runs |
 | Engine headers | All header-only (clock, queue, bar_feed, engine) | No .cpp files needed — simple types with no heavy dependencies beyond domain headers |
 
-## Unresolved Decisions
+<!--## Unresolved Decisions
 
 - **yaml-cpp integration**: planned for Layer 7 (experiment runner) but not yet added to CMake
 - **spdlog vs custom logger**: deferred until structured logging is needed
@@ -439,4 +439,5 @@ Ordered by implementation layer:
 7. **Layer 7**: Experiment runner (YAML config, full pipeline wiring, known-answer test, determinism proof)
 8. **Layer 8**: Analytics & reporting (Sharpe, drawdown, cost attribution, HTML report via Python)
 9. **Layer 9**: Research protocol (train/val/test split, walk-forward, cost sensitivity, benchmark comparison)
-10. **Layer 10**: Adversarial test suite & performance benchmarks (edge-case scenarios, measured throughput, profiling)
+10. **Layer 10**: Adversarial test suite & performance benchmarks (edge-case scenarios, measured throughput, profiling) 
+-->
